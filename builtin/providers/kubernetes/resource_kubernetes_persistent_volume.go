@@ -87,7 +87,7 @@ func resourceKubernetesPersistentVolumeCreate(d *schema.ResourceData, meta inter
 	log.Printf("[INFO] Submitted new persistent volume: %#v", out)
 
 	stateConf := &resource.StateChangeConf{
-		Target:  []string{"Available"},
+		Target:  []string{"Available", "Bound"},
 		Pending: []string{"Pending"},
 		Timeout: 5 * time.Minute,
 		Refresh: func() (interface{}, string, error) {
