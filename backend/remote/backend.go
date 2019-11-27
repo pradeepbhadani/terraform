@@ -10,16 +10,16 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	tfe "github.com/hashicorp/go-tfe"
 	version "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-svchost"
+	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/hashicorp/terraform/backend"
 	"github.com/hashicorp/terraform/configs/configschema"
-	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/state"
 	"github.com/hashicorp/terraform/state/remote"
-	"github.com/hashicorp/terraform/svchost"
-	"github.com/hashicorp/terraform/svchost/disco"
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/hashicorp/terraform/tfdiags"
 	tfversion "github.com/hashicorp/terraform/version"
@@ -33,6 +33,7 @@ import (
 const (
 	defaultHostname    = "app.terraform.io"
 	defaultParallelism = 10
+	stateServiceID     = "state.v2"
 	tfeServiceID       = "tfe.v2.1"
 )
 
@@ -55,6 +56,9 @@ type Remote struct {
 	// client is the remote backend API client.
 	client *tfe.Client
 
+	// lastRetry is set to the last time a request was retried.
+	lastRetry time.Time
+
 	// hostname of the remote backend server.
 	hostname string
 
@@ -67,9 +71,6 @@ type Remote struct {
 	// prefix is used to filter down a set of workspaces that use a single
 	// configuration.
 	prefix string
-
-	// schema defines the configuration for the backend.
-	schema *schema.Backend
 
 	// services is used for service discovery
 	services *disco.Disco
@@ -138,8 +139,8 @@ func (b *Remote) ConfigSchema() *configschema.Block {
 	}
 }
 
-// ValidateConfig implements backend.Enhanced.
-func (b *Remote) ValidateConfig(obj cty.Value) tfdiags.Diagnostics {
+// PrepareConfig implements backend.Backend.
+func (b *Remote) PrepareConfig(obj cty.Value) (cty.Value, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	if val := obj.GetAttr("organization"); val.IsNull() || val.AsString() == "" {
@@ -181,7 +182,7 @@ func (b *Remote) ValidateConfig(obj cty.Value) tfdiags.Diagnostics {
 		))
 	}
 
-	return diags
+	return obj, diags
 }
 
 // Configure implements backend.Enhanced.
@@ -211,9 +212,28 @@ func (b *Remote) Configure(obj cty.Value) tfdiags.Diagnostics {
 		}
 	}
 
+	// Determine if we are forced to use the local backend.
+	b.forceLocal = os.Getenv("TF_FORCE_LOCAL_BACKEND") != ""
+
+	serviceID := tfeServiceID
+	if b.forceLocal {
+		serviceID = stateServiceID
+	}
+
 	// Discover the service URL for this host to confirm that it provides
 	// a remote backend API and to get the version constraints.
-	service, constraints, err := b.discover()
+	service, constraints, err := b.discover(serviceID)
+
+	// First check any contraints we might have received.
+	if constraints != nil {
+		diags = diags.Append(b.checkConstraints(constraints))
+		if diags.HasErrors() {
+			return diags
+		}
+	}
+
+	// When we don't have any constraints errors, also check for discovery
+	// errors before we continue.
 	if err != nil {
 		diags = diags.Append(tfdiags.AttributeValue(
 			tfdiags.Error,
@@ -221,15 +241,6 @@ func (b *Remote) Configure(obj cty.Value) tfdiags.Diagnostics {
 			"", // no description is needed here, the error is clear
 			cty.Path{cty.GetAttrStep{Name: "hostname"}},
 		))
-	}
-
-	// Check any retrieved constraints to make sure we are compatible.
-	if constraints != nil {
-		diags = diags.Append(b.checkConstraints(constraints))
-	}
-
-	// Return if we have any discovery of version constraints errors.
-	if diags.HasErrors() {
 		return diags
 	}
 
@@ -268,10 +279,11 @@ func (b *Remote) Configure(obj cty.Value) tfdiags.Diagnostics {
 	}
 
 	cfg := &tfe.Config{
-		Address:  service.String(),
-		BasePath: service.Path,
-		Token:    token,
-		Headers:  make(http.Header),
+		Address:      service.String(),
+		BasePath:     service.Path,
+		Token:        token,
+		Headers:      make(http.Header),
+		RetryLogHook: b.retryLogHook,
 	}
 
 	// Set the version header to the current version.
@@ -311,13 +323,16 @@ func (b *Remote) Configure(obj cty.Value) tfdiags.Diagnostics {
 
 	// Configure a local backend for when we need to run operations locally.
 	b.local = backendLocal.NewWithBackend(b)
-	b.forceLocal = !entitlements.Operations || os.Getenv("TF_FORCE_LOCAL_BACKEND") != ""
+	b.forceLocal = b.forceLocal || !entitlements.Operations
+
+	// Enable retries for server errors as the backend is now fully configured.
+	b.client.RetryServerErrors(true)
 
 	return diags
 }
 
 // discover the remote backend API service URL and version constraints.
-func (b *Remote) discover() (*url.URL, *disco.Constraints, error) {
+func (b *Remote) discover(serviceID string) (*url.URL, *disco.Constraints, error) {
 	hostname, err := svchost.ForComparison(b.hostname)
 	if err != nil {
 		return nil, nil, err
@@ -328,20 +343,15 @@ func (b *Remote) discover() (*url.URL, *disco.Constraints, error) {
 		return nil, nil, err
 	}
 
-	service, err := host.ServiceURL(tfeServiceID)
+	service, err := host.ServiceURL(serviceID)
 	// Return the error, unless its a disco.ErrVersionNotSupported error.
 	if _, ok := err.(*disco.ErrVersionNotSupported); !ok && err != nil {
 		return nil, nil, err
 	}
 
-	// Return early if we are a development build.
-	if tfversion.Prerelease == "dev" {
-		return service, nil, err
-	}
-
 	// We purposefully ignore the error and return the previous error, as
 	// checking for version constraints is considered optional.
-	constraints, _ := host.VersionConstraints(tfeServiceID, "terraform")
+	constraints, _ := host.VersionConstraints(serviceID, "terraform")
 
 	return service, constraints, err
 }
@@ -391,8 +401,19 @@ func (b *Remote) checkConstraints(c *disco.Constraints) tfdiags.Diagnostics {
 		return diags.Append(checkConstraintsWarning(err))
 	}
 
-	var action, toVersion string
 	var excludes []*version.Version
+	for _, exclude := range c.Excluding {
+		v, err := version.NewVersion(exclude)
+		if err != nil {
+			return diags.Append(checkConstraintsWarning(err))
+		}
+		excludes = append(excludes, v)
+	}
+
+	// Sort all the excludes.
+	sort.Sort(version.Collection(excludes))
+
+	var action, toVersion string
 	switch {
 	case minimum.GreaterThan(v):
 		action = "upgrade"
@@ -400,18 +421,7 @@ func (b *Remote) checkConstraints(c *disco.Constraints) tfdiags.Diagnostics {
 	case maximum.LessThan(v):
 		action = "downgrade"
 		toVersion = "<= " + maximum.String()
-	case len(c.Excluding) > 0:
-		for _, exclude := range c.Excluding {
-			v, err := version.NewVersion(exclude)
-			if err != nil {
-				return diags.Append(checkConstraintsWarning(err))
-			}
-			excludes = append(excludes, v)
-		}
-
-		// Sort all the excludes.
-		sort.Sort(version.Collection(excludes))
-
+	case len(excludes) > 0:
 		// Get the latest excluded version.
 		action = "upgrade"
 		toVersion = "> " + excludes[len(excludes)-1].String()
@@ -462,6 +472,31 @@ func (b *Remote) token() (string, error) {
 		return creds.Token(), nil
 	}
 	return "", nil
+}
+
+// retryLogHook is invoked each time a request is retried allowing the
+// backend to log any connection issues to prevent data loss.
+func (b *Remote) retryLogHook(attemptNum int, resp *http.Response) {
+	if b.CLI != nil {
+		// Ignore the first retry to make sure any delayed output will
+		// be written to the console before we start logging retries.
+		//
+		// The retry logic in the TFE client will retry both rate limited
+		// requests and server errors, but in the remote backend we only
+		// care about server errors so we ignore rate limit (429) errors.
+		if attemptNum == 0 || resp.StatusCode == 429 {
+			// Reset the last retry time.
+			b.lastRetry = time.Now()
+			return
+		}
+
+		if attemptNum == 1 {
+			b.CLI.Output(b.Colorize().Color(strings.TrimSpace(initialRetryError)))
+		} else {
+			b.CLI.Output(b.Colorize().Color(strings.TrimSpace(
+				fmt.Sprintf(repeatedRetryError, time.Since(b.lastRetry).Round(time.Second)))))
+		}
+	}
 }
 
 // Workspaces implements backend.Enhanced.
@@ -622,11 +657,7 @@ func (b *Remote) Operation(ctx context.Context, op *backend.Operation) (*backend
 			)
 		default:
 			return nil, fmt.Errorf(
-				"%s\n\n"+
-					"The configured \"remote\" backend encountered an unexpected error. Sometimes\n"+
-					"this is caused by network connection problems, in which case you could retr\n"+
-					"the command. If the issue persists please open a support ticket to get help\n"+
-					"resolving the problem.",
+				"The configured \"remote\" backend encountered an unexpected error:\n\n%s",
 				err,
 			)
 		}
@@ -686,6 +717,11 @@ func (b *Remote) Operation(ctx context.Context, op *backend.Operation) (*backend
 			return
 		}
 
+		if r == nil && opErr == context.Canceled {
+			runningOp.Result = backend.OperationFailure
+			return
+		}
+
 		if r != nil {
 			// Retrieve the run to get its current status.
 			r, err := b.client.Runs.Read(cancelCtx, r.ID)
@@ -704,7 +740,7 @@ func (b *Remote) Operation(ctx context.Context, op *backend.Operation) (*backend
 				}
 			}
 
-			if r.Status == tfe.RunErrored {
+			if r.Status == tfe.RunCanceled || r.Status == tfe.RunErrored {
 				runningOp.Result = backend.OperationFailure
 			}
 		}
@@ -715,13 +751,13 @@ func (b *Remote) Operation(ctx context.Context, op *backend.Operation) (*backend
 }
 
 func (b *Remote) cancel(cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
-	if r.Status == tfe.RunPending && r.Actions.IsCancelable {
+	if r.Actions.IsCancelable {
 		// Only ask if the remote operation should be canceled
 		// if the auto approve flag is not set.
 		if !op.AutoApprove {
-			v, err := op.UIIn.Input(&terraform.InputOpts{
+			v, err := op.UIIn.Input(cancelCtx, &terraform.InputOpts{
 				Id:          "cancel",
-				Query:       "\nDo you want to cancel the pending remote operation?",
+				Query:       "\nDo you want to cancel the remote operation?",
 				Description: "Only 'yes' will be accepted to cancel.",
 			})
 			if err != nil {
@@ -822,7 +858,7 @@ func generalError(msg string, err error) error {
 			fmt.Sprintf("%s: %v", msg, err),
 			`The configured "remote" backend returns '404 Not Found' errors for resources `+
 				`that do not exist, as well as for resources that a user doesn't have access `+
-				`to. When the resource does exists, please check the rights for the used token.`,
+				`to. If the resource does exists, please check the rights for the used token.`,
 		))
 		return diags.Err()
 	default:
@@ -846,6 +882,17 @@ func checkConstraintsWarning(err error) tfdiags.Diagnostic {
 			"unexpected error which should be reported.",
 	)
 }
+
+// The newline in this error is to make it look good in the CLI!
+const initialRetryError = `
+[reset][yellow]There was an error connecting to the remote backend. Please do not exit
+Terraform to prevent data loss! Trying to restore the connection...
+[reset]
+`
+
+const repeatedRetryError = `
+[reset][yellow]Still trying to restore the connection... (%s elapsed)[reset]
+`
 
 const operationCanceled = `
 [reset][red]The remote operation was successfully cancelled.[reset]

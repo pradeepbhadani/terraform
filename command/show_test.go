@@ -5,11 +5,13 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/hashicorp/terraform/addrs"
 	"github.com/hashicorp/terraform/configs/configschema"
+	"github.com/hashicorp/terraform/helper/copy"
 	"github.com/hashicorp/terraform/plans"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/hashicorp/terraform/states"
@@ -30,27 +32,6 @@ func TestShow(t *testing.T) {
 	args := []string{
 		"bad",
 		"bad",
-	}
-	if code := c.Run(args); code != 1 {
-		t.Fatalf("bad: \n%s", ui.OutputWriter.String())
-	}
-}
-
-func TestShow_JSONStateNotImplemented(t *testing.T) {
-	// Create the default state
-	statePath := testStateFile(t, testState())
-	defer testChdir(t, filepath.Dir(statePath))()
-	ui := new(cli.MockUi)
-	c := &ShowCommand{
-		Meta: Meta{
-			testingOverrides: metaOverridesForProvider(testProvider()),
-			Ui:               ui,
-		},
-	}
-
-	args := []string{
-		"-json",
-		statePath,
 	}
 	if code := c.Run(args); code != 1 {
 		t.Fatalf("bad: \n%s", ui.OutputWriter.String())
@@ -98,7 +79,7 @@ func TestShow_noArgsNoState(t *testing.T) {
 func TestShow_plan(t *testing.T) {
 	planPath := testPlanFileNoop(t)
 
-	ui := new(cli.MockUi)
+	ui := cli.NewMockUi()
 	c := &ShowCommand{
 		Meta: Meta{
 			testingOverrides: metaOverridesForProvider(testProvider()),
@@ -111,6 +92,12 @@ func TestShow_plan(t *testing.T) {
 	}
 	if code := c.Run(args); code != 0 {
 		t.Fatalf("bad: \n%s", ui.ErrorWriter.String())
+	}
+
+	want := `Terraform will perform the following actions`
+	got := ui.OutputWriter.String()
+	if !strings.Contains(got, want) {
+		t.Errorf("missing expected output\nwant: %s\ngot:\n%s", want, got)
 	}
 }
 
@@ -154,8 +141,8 @@ func TestShow_state(t *testing.T) {
 	}
 }
 
-func TestPlan_json_output(t *testing.T) {
-	fixtureDir := "test-fixtures/show-json"
+func TestShow_json_output(t *testing.T) {
+	fixtureDir := "testdata/show-json"
 	testDirs, err := ioutil.ReadDir(fixtureDir)
 	if err != nil {
 		t.Fatal(err)
@@ -167,24 +154,41 @@ func TestPlan_json_output(t *testing.T) {
 		}
 
 		t.Run(entry.Name(), func(t *testing.T) {
+			td := tempDir(t)
 			inputDir := filepath.Join(fixtureDir, entry.Name())
+			copy.CopyDir(inputDir, td)
+			defer os.RemoveAll(td)
+			defer testChdir(t, td)()
 
-			cwd, err := os.Getwd()
-			if err != nil {
-				t.Fatalf("err: %s", err)
-			}
-			if err := os.Chdir(inputDir); err != nil {
-				t.Fatalf("err: %s", err)
-			}
-			defer os.Chdir(cwd)
+			expectError := strings.Contains(entry.Name(), "error")
 
 			p := showFixtureProvider()
 			ui := new(cli.MockUi)
-			pc := &PlanCommand{
-				Meta: Meta{
-					testingOverrides: metaOverridesForProvider(p),
-					Ui:               ui,
+			m := Meta{
+				testingOverrides: metaOverridesForProvider(p),
+				Ui:               ui,
+			}
+
+			// init
+			ic := &InitCommand{
+				Meta: m,
+				providerInstaller: &mockProviderInstaller{
+					Providers: map[string][]string{
+						"test": []string{"1.2.3"},
+					},
+					Dir: m.pluginDir(),
 				},
+			}
+			if code := ic.Run([]string{}); code != 0 {
+				if expectError {
+					// this should error, but not panic.
+					return
+				}
+				t.Fatalf("init failed\n%s", ui.ErrorWriter)
+			}
+
+			pc := &PlanCommand{
+				Meta: m,
 			}
 
 			args := []string{
@@ -198,10 +202,7 @@ func TestPlan_json_output(t *testing.T) {
 			// flush the plan output from the mock ui
 			ui.OutputWriter.Reset()
 			sc := &ShowCommand{
-				Meta: Meta{
-					testingOverrides: metaOverridesForProvider(p),
-					Ui:               ui,
-				},
+				Meta: m,
 			}
 
 			args = []string{
@@ -240,8 +241,90 @@ func TestPlan_json_output(t *testing.T) {
 	}
 }
 
+// similar test as above, without the plan
+func TestShow_json_output_state(t *testing.T) {
+	fixtureDir := "testdata/show-json-state"
+	testDirs, err := ioutil.ReadDir(fixtureDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, entry := range testDirs {
+		if !entry.IsDir() {
+			continue
+		}
+
+		t.Run(entry.Name(), func(t *testing.T) {
+			td := tempDir(t)
+			inputDir := filepath.Join(fixtureDir, entry.Name())
+			copy.CopyDir(inputDir, td)
+			defer os.RemoveAll(td)
+			defer testChdir(t, td)()
+
+			p := showFixtureProvider()
+			ui := new(cli.MockUi)
+			m := Meta{
+				testingOverrides: metaOverridesForProvider(p),
+				Ui:               ui,
+			}
+
+			// init
+			ic := &InitCommand{
+				Meta: m,
+				providerInstaller: &mockProviderInstaller{
+					Providers: map[string][]string{
+						"test": []string{"1.2.3"},
+					},
+					Dir: m.pluginDir(),
+				},
+			}
+			if code := ic.Run([]string{}); code != 0 {
+				t.Fatalf("init failed\n%s", ui.ErrorWriter)
+			}
+
+			// flush the plan output from the mock ui
+			ui.OutputWriter.Reset()
+			sc := &ShowCommand{
+				Meta: m,
+			}
+
+			if code := sc.Run([]string{"-json"}); code != 0 {
+				t.Fatalf("wrong exit status %d; want 0\nstderr: %s", code, ui.ErrorWriter.String())
+			}
+
+			// compare ui output to wanted output
+			type state struct {
+				FormatVersion    string                 `json:"format_version,omitempty"`
+				TerraformVersion string                 `json:"terraform_version"`
+				Values           map[string]interface{} `json:"values,omitempty"`
+			}
+			var got, want state
+
+			gotString := ui.OutputWriter.String()
+			json.Unmarshal([]byte(gotString), &got)
+
+			wantFile, err := os.Open("output.json")
+			if err != nil {
+				t.Fatalf("err: %s", err)
+			}
+			defer wantFile.Close()
+			byteValue, err := ioutil.ReadAll(wantFile)
+			if err != nil {
+				t.Fatalf("err: %s", err)
+			}
+			json.Unmarshal([]byte(byteValue), &want)
+
+			if !cmp.Equal(got, want) {
+				t.Fatalf("wrong result:\n %v\n", cmp.Diff(got, want))
+			}
+
+		})
+
+	}
+}
+
 // showFixtureSchema returns a schema suitable for processing the configuration
-// in test-fixtures/show. This schema should be assigned to a mock provider
+// in testdata/show. This schema should be assigned to a mock provider
 // named "test".
 func showFixtureSchema() *terraform.ProviderSchema {
 	return &terraform.ProviderSchema{
@@ -257,7 +340,7 @@ func showFixtureSchema() *terraform.ProviderSchema {
 }
 
 // showFixtureProvider returns a mock provider that is configured for basic
-// operation with the configuration in test-fixtures/show. This mock has
+// operation with the configuration in testdata/show. This mock has
 // GetSchemaReturn, PlanResourceChangeFn, and ApplyResourceChangeFn populated,
 // with the plan/apply steps just passing through the data determined by
 // Terraform Core.
@@ -265,13 +348,29 @@ func showFixtureProvider() *terraform.MockProvider {
 	p := testProvider()
 	p.GetSchemaReturn = showFixtureSchema()
 	p.PlanResourceChangeFn = func(req providers.PlanResourceChangeRequest) providers.PlanResourceChangeResponse {
+		idVal := req.ProposedNewState.GetAttr("id")
+		amiVal := req.ProposedNewState.GetAttr("ami")
+		if idVal.IsNull() {
+			idVal = cty.UnknownVal(cty.String)
+		}
 		return providers.PlanResourceChangeResponse{
-			PlannedState: req.ProposedNewState,
+			PlannedState: cty.ObjectVal(map[string]cty.Value{
+				"id":  idVal,
+				"ami": amiVal,
+			}),
 		}
 	}
 	p.ApplyResourceChangeFn = func(req providers.ApplyResourceChangeRequest) providers.ApplyResourceChangeResponse {
+		idVal := req.PlannedState.GetAttr("id")
+		amiVal := req.PlannedState.GetAttr("ami")
+		if !idVal.IsKnown() {
+			idVal = cty.StringVal("placeholder")
+		}
 		return providers.ApplyResourceChangeResponse{
-			NewState: cty.UnknownAsNull(req.PlannedState),
+			NewState: cty.ObjectVal(map[string]cty.Value{
+				"id":  idVal,
+				"ami": amiVal,
+			}),
 		}
 	}
 	return p
@@ -317,12 +416,20 @@ func showFixturePlanFile(t *testing.T) string {
 }
 
 // this simplified plan struct allows us to preserve field order when marshaling
-// the command output.
+// the command output. NOTE: we are leaving "terraform_version" out of this test
+// to avoid needing to constantly update the expected output; as a potential
+// TODO we could write a jsonplan compare function.
 type plan struct {
 	FormatVersion   string                 `json:"format_version,omitempty"`
+	Variables       map[string]interface{} `json:"variables,omitempty"`
 	PlannedValues   map[string]interface{} `json:"planned_values,omitempty"`
 	ResourceChanges []interface{}          `json:"resource_changes,omitempty"`
 	OutputChanges   map[string]interface{} `json:"output_changes,omitempty"`
-	PriorState      string                 `json:"prior_state,omitempty"`
-	Config          string                 `json:"configuration,omitempty"`
+	PriorState      priorState             `json:"prior_state,omitempty"`
+	Config          map[string]interface{} `json:"configuration,omitempty"`
+}
+
+type priorState struct {
+	FormatVersion string                 `json:"format_version,omitempty"`
+	Values        map[string]interface{} `json:"values,omitempty"`
 }

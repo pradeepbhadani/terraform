@@ -26,6 +26,7 @@ import (
 	"github.com/hashicorp/terraform/configs"
 	"github.com/hashicorp/terraform/configs/configload"
 	"github.com/hashicorp/terraform/helper/logging"
+	"github.com/hashicorp/terraform/internal/initwd"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/hashicorp/terraform/states"
 	"github.com/hashicorp/terraform/terraform"
@@ -375,11 +376,12 @@ type TestStep struct {
 
 	// ImportStateVerify, if true, will also check that the state values
 	// that are finally put into the state after import match for all the
-	// IDs returned by the Import.
+	// IDs returned by the Import.  Note that this checks for strict equality
+	// and does not respect DiffSuppressFunc or CustomizeDiff.
 	//
-	// ImportStateVerifyIgnore are fields that should not be verified to
-	// be equal. These can be set to ephemeral fields or fields that can't
-	// be refreshed and don't matter.
+	// ImportStateVerifyIgnore is a list of prefixes of fields that should
+	// not be verified to be equal. These can be set to ephemeral fields or
+	// fields that can't be refreshed and don't matter.
 	ImportStateVerify       bool
 	ImportStateVerifyIgnore []string
 
@@ -832,16 +834,17 @@ func testConfig(opts terraform.ContextOpts, step TestStep) (*configs.Config, err
 		return nil, fmt.Errorf("Error creating child modules directory: %s", err)
 	}
 
+	inst := initwd.NewModuleInstaller(modulesDir, nil)
+	_, installDiags := inst.InstallModules(cfgPath, true, initwd.ModuleInstallHooksImpl{})
+	if installDiags.HasErrors() {
+		return nil, installDiags.Err()
+	}
+
 	loader, err := configload.NewLoader(&configload.Config{
 		ModulesDir: modulesDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config loader: %s", err)
-	}
-
-	installDiags := loader.InstallModules(cfgPath, true, configload.InstallHooksImpl{})
-	if installDiags.HasErrors() {
-		return nil, installDiags
 	}
 
 	config, configDiags := loader.LoadConfig(cfgPath)
@@ -1144,14 +1147,32 @@ func TestCheckModuleResourceAttrPair(mpFirst []string, nameFirst string, keyFirs
 }
 
 func testCheckResourceAttrPair(isFirst *terraform.InstanceState, nameFirst string, keyFirst string, isSecond *terraform.InstanceState, nameSecond string, keySecond string) error {
-	vFirst, ok := isFirst.Attributes[keyFirst]
-	if !ok {
-		return fmt.Errorf("%s: Attribute '%s' not found", nameFirst, keyFirst)
+	vFirst, okFirst := isFirst.Attributes[keyFirst]
+	vSecond, okSecond := isSecond.Attributes[keySecond]
+
+	// Container count values of 0 should not be relied upon, and not reliably
+	// maintained by helper/schema. For the purpose of tests, consider unset and
+	// 0 to be equal.
+	if len(keyFirst) > 2 && len(keySecond) > 2 && keyFirst[len(keyFirst)-2:] == keySecond[len(keySecond)-2:] &&
+		(strings.HasSuffix(keyFirst, ".#") || strings.HasSuffix(keyFirst, ".%")) {
+		// they have the same suffix, and it is a collection count key.
+		if vFirst == "0" || vFirst == "" {
+			okFirst = false
+		}
+		if vSecond == "0" || vSecond == "" {
+			okSecond = false
+		}
 	}
 
-	vSecond, ok := isSecond.Attributes[keySecond]
-	if !ok {
-		return fmt.Errorf("%s: Attribute '%s' not found", nameSecond, keySecond)
+	if okFirst != okSecond {
+		if !okFirst {
+			return fmt.Errorf("%s: Attribute %q not set, but %q is set in %s as %q", nameFirst, keyFirst, keySecond, nameSecond, vSecond)
+		}
+		return fmt.Errorf("%s: Attribute %q is %q, but %q is not set in %s", nameFirst, keyFirst, vFirst, keySecond, nameSecond)
+	}
+	if !(okFirst || okSecond) {
+		// If they both don't exist then they are equally unset, so that's okay.
+		return nil
 	}
 
 	if vFirst != vSecond {

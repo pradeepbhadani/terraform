@@ -1175,3 +1175,260 @@ func TestCheckNoResourceAttr_empty(t *testing.T) {
 		})
 	}
 }
+
+func TestTestCheckResourceAttrPair(t *testing.T) {
+	tests := map[string]struct {
+		state   *terraform.State
+		wantErr string
+	}{
+		"exist match": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"a": "boop",
+									},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"b": "boop",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			``,
+		},
+		"nonexist match": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			``,
+		},
+		"exist nonmatch": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"a": "beep",
+									},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"b": "boop",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			`test.a: Attribute 'a' expected "boop", got "beep"`,
+		},
+		"inconsistent exist a": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"a": "beep",
+									},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			`test.a: Attribute "a" is "beep", but "b" is not set in test.b`,
+		},
+		"inconsistent exist b": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"b": "boop",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			`test.a: Attribute "a" not set, but "b" is set in test.b as "boop"`,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			fn := TestCheckResourceAttrPair("test.a", "a", "test.b", "b")
+			err := fn(test.state)
+
+			if test.wantErr != "" {
+				if err == nil {
+					t.Fatalf("succeeded; want error\nwant: %s", test.wantErr)
+				}
+				if got, want := err.Error(), test.wantErr; got != want {
+					t.Fatalf("wrong error\ngot:  %s\nwant: %s", got, want)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("failed; want success\ngot: %s", err.Error())
+			}
+		})
+	}
+}
+
+func TestTestCheckResourceAttrPairCount(t *testing.T) {
+	tests := map[string]struct {
+		state   *terraform.State
+		attr    string
+		wantErr string
+	}{
+		"unset and 0 equal list": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"a.#": "0",
+									},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			"a.#",
+			``,
+		},
+		"unset and 0 equal map": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"a.%": "0",
+									},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			"a.%",
+			``,
+		},
+		"count equal": {
+			&terraform.State{
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test.a": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"a.%": "1",
+									},
+								},
+							},
+							"test.b": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"a.%": "1",
+									}},
+							},
+						},
+					},
+				},
+			},
+			"a.%",
+			``,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			fn := TestCheckResourceAttrPair("test.a", test.attr, "test.b", test.attr)
+			err := fn(test.state)
+
+			if test.wantErr != "" {
+				if err == nil {
+					t.Fatalf("succeeded; want error\nwant: %s", test.wantErr)
+				}
+				if got, want := err.Error(), test.wantErr; got != want {
+					t.Fatalf("wrong error\ngot:  %s\nwant: %s", got, want)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("failed; want success\ngot: %s", err.Error())
+			}
+		})
+	}
+}

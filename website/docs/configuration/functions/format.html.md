@@ -9,6 +9,10 @@ description: |-
 
 # `format` Function
 
+-> **Note:** This page is about Terraform 0.12 and later. For Terraform 0.11 and
+earlier, see
+[0.11 Configuration Language: Interpolation Syntax](../../configuration-0-11/interpolation.html).
+
 `format` produces a string by formatting a number of other values according
 to a specification string. It is similar to the `printf` function in C, and
 other similar functions in other programming languages.
@@ -101,7 +105,7 @@ to set additoinal flags:
 | space  | Leave a space where the sign would be if a number is positive. |
 | `+`    | Show the sign of a number even if it is positive.              |
 | `-`    | Pad the width with spaces on the left rather than the right.   |
-| `0`    | Pad the width with zeros rather than spaces.                   |
+| `0`    | Pad the width with leading zeros rather than spaces.           |
 
 By default, `%` sequences consume successive arguments starting with the first.
 Introducing a `[n]` sequence immediately before the verb letter, where `n` is a

@@ -92,6 +92,18 @@ func TestMarshalAttributeValues(t *testing.T) {
 			nil,
 		},
 		{
+			cty.NullVal(cty.String),
+			&configschema.Block{
+				Attributes: map[string]*configschema.Attribute{
+					"foo": {
+						Type:     cty.String,
+						Optional: true,
+					},
+				},
+			},
+			nil,
+		},
+		{
 			cty.ObjectVal(map[string]cty.Value{
 				"foo": cty.StringVal("bar"),
 			}),
@@ -103,7 +115,7 @@ func TestMarshalAttributeValues(t *testing.T) {
 					},
 				},
 			},
-			attributeValues{"foo": cty.StringVal("bar")},
+			attributeValues{"foo": json.RawMessage(`"bar"`)},
 		},
 		{
 			cty.ObjectVal(map[string]cty.Value{
@@ -117,7 +129,7 @@ func TestMarshalAttributeValues(t *testing.T) {
 					},
 				},
 			},
-			attributeValues{"foo": cty.NullVal(cty.String)},
+			attributeValues{"foo": json.RawMessage(`null`)},
 		},
 		{
 			cty.ObjectVal(map[string]cty.Value{
@@ -142,13 +154,8 @@ func TestMarshalAttributeValues(t *testing.T) {
 				},
 			},
 			attributeValues{
-				"bar": cty.MapVal(map[string]cty.Value{
-					"hello": cty.StringVal("world"),
-				}),
-				"baz": cty.ListVal([]cty.Value{
-					cty.StringVal("goodnight"),
-					cty.StringVal("moon"),
-				}),
+				"bar": json.RawMessage(`{"hello":"world"}`),
+				"baz": json.RawMessage(`["goodnight","moon"]`),
 			},
 		},
 	}
@@ -157,25 +164,26 @@ func TestMarshalAttributeValues(t *testing.T) {
 		got := marshalAttributeValues(test.Attr, test.Schema)
 		eq := reflect.DeepEqual(got, test.Want)
 		if !eq {
-			t.Fatalf("wrong result:\nGot: %v\nWant: %#v\n", got, test.Want)
+			t.Fatalf("wrong result:\nGot: %#v\nWant: %#v\n", got, test.Want)
 		}
 	}
 }
 
 func TestMarshalResources(t *testing.T) {
-	tests := []struct {
+	deposedKey := states.NewDeposedKey()
+	tests := map[string]struct {
 		Resources map[string]*states.Resource
 		Schemas   *terraform.Schemas
 		Want      []resource
 		Err       bool
 	}{
-		{
+		"nil": {
 			nil,
 			nil,
 			nil,
 			false,
 		},
-		{
+		"single resource": {
 			map[string]*states.Resource{
 				"test_thing.baz": {
 					Addr: addrs.Resource{
@@ -209,8 +217,112 @@ func TestMarshalResources(t *testing.T) {
 					ProviderName:  "test",
 					SchemaVersion: 1,
 					AttributeValues: attributeValues{
-						"foozles": cty.NullVal(cty.String),
-						"woozles": cty.StringVal("confuzles"),
+						"foozles": json.RawMessage(`null`),
+						"woozles": json.RawMessage(`"confuzles"`),
+					},
+				},
+			},
+			false,
+		},
+		"deposed resource": {
+			map[string]*states.Resource{
+				"test_thing.baz": {
+					Addr: addrs.Resource{
+						Mode: addrs.ManagedResourceMode,
+						Type: "test_thing",
+						Name: "bar",
+					},
+					EachMode: states.EachList,
+					Instances: map[addrs.InstanceKey]*states.ResourceInstance{
+						addrs.IntKey(0): {
+							Deposed: map[states.DeposedKey]*states.ResourceInstanceObjectSrc{
+								states.DeposedKey(deposedKey): &states.ResourceInstanceObjectSrc{
+									SchemaVersion: 1,
+									Status:        states.ObjectReady,
+									AttrsJSON:     []byte(`{"woozles":"confuzles"}`),
+								},
+							},
+						},
+					},
+					ProviderConfig: addrs.ProviderConfig{
+						Type: "test",
+					}.Absolute(addrs.RootModuleInstance),
+				},
+			},
+			testSchemas(),
+			[]resource{
+				resource{
+					Address:      "test_thing.bar",
+					Mode:         "managed",
+					Type:         "test_thing",
+					Name:         "bar",
+					Index:        addrs.IntKey(0),
+					ProviderName: "test",
+					DeposedKey:   deposedKey.String(),
+					AttributeValues: attributeValues{
+						"foozles": json.RawMessage(`null`),
+						"woozles": json.RawMessage(`"confuzles"`),
+					},
+				},
+			},
+			false,
+		},
+		"deposed and current resource": {
+			map[string]*states.Resource{
+				"test_thing.baz": {
+					Addr: addrs.Resource{
+						Mode: addrs.ManagedResourceMode,
+						Type: "test_thing",
+						Name: "bar",
+					},
+					EachMode: states.EachList,
+					Instances: map[addrs.InstanceKey]*states.ResourceInstance{
+						addrs.IntKey(0): {
+							Deposed: map[states.DeposedKey]*states.ResourceInstanceObjectSrc{
+								states.DeposedKey(deposedKey): &states.ResourceInstanceObjectSrc{
+									SchemaVersion: 1,
+									Status:        states.ObjectReady,
+									AttrsJSON:     []byte(`{"woozles":"confuzles"}`),
+								},
+							},
+							Current: &states.ResourceInstanceObjectSrc{
+								SchemaVersion: 1,
+								Status:        states.ObjectReady,
+								AttrsJSON:     []byte(`{"woozles":"confuzles"}`),
+							},
+						},
+					},
+					ProviderConfig: addrs.ProviderConfig{
+						Type: "test",
+					}.Absolute(addrs.RootModuleInstance),
+				},
+			},
+			testSchemas(),
+			[]resource{
+				resource{
+					Address:       "test_thing.bar",
+					Mode:          "managed",
+					Type:          "test_thing",
+					Name:          "bar",
+					Index:         addrs.IntKey(0),
+					ProviderName:  "test",
+					SchemaVersion: 1,
+					AttributeValues: attributeValues{
+						"foozles": json.RawMessage(`null`),
+						"woozles": json.RawMessage(`"confuzles"`),
+					},
+				},
+				resource{
+					Address:      "test_thing.bar",
+					Mode:         "managed",
+					Type:         "test_thing",
+					Name:         "bar",
+					Index:        addrs.IntKey(0),
+					ProviderName: "test",
+					DeposedKey:   deposedKey.String(),
+					AttributeValues: attributeValues{
+						"foozles": json.RawMessage(`null`),
+						"woozles": json.RawMessage(`"confuzles"`),
 					},
 				},
 			},
@@ -218,20 +330,22 @@ func TestMarshalResources(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
-		got, err := marshalResources(test.Resources, test.Schemas)
-		if test.Err {
-			if err == nil {
-				t.Fatal("succeeded; want error")
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := marshalResources(test.Resources, test.Schemas)
+			if test.Err {
+				if err == nil {
+					t.Fatal("succeeded; want error")
+				}
+				return
+			} else if err != nil {
+				t.Fatalf("unexpected error: %s", err)
 			}
-			return
-		} else if err != nil {
-			t.Fatalf("unexpected error: %s", err)
-		}
-		eq := reflect.DeepEqual(got, test.Want)
-		if !eq {
-			t.Fatalf("wrong result:\nGot: %#v\nWant: %#v\n", got, test.Want)
-		}
+			eq := reflect.DeepEqual(got, test.Want)
+			if !eq {
+				t.Fatalf("wrong result:\nGot: %#v\nWant: %#v\n", got, test.Want)
+			}
+		})
 	}
 }
 

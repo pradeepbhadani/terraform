@@ -159,6 +159,12 @@ func TestTemplateFile(t *testing.T) {
 		t.Run(fmt.Sprintf("TemplateFile(%#v, %#v)", test.Path, test.Vars), func(t *testing.T) {
 			got, err := templateFileFn.Call([]cty.Value{test.Path, test.Vars})
 
+			if argErr, ok := err.(function.ArgError); ok {
+				if argErr.Index < 0 || argErr.Index > 1 {
+					t.Errorf("ArgError index %d is out of range for templatefile (must be 0 or 1)", argErr.Index)
+				}
+			}
+
 			if test.Err {
 				if err == nil {
 					t.Fatal("succeeded; want error")
@@ -201,6 +207,219 @@ func TestFileExists(t *testing.T) {
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("FileExists(\".\", %#v)", test.Path), func(t *testing.T) {
 			got, err := FileExists(".", test.Path)
+
+			if test.Err {
+				if err == nil {
+					t.Fatal("succeeded; want error")
+				}
+				return
+			} else if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+
+			if !got.RawEquals(test.Want) {
+				t.Errorf("wrong result\ngot:  %#v\nwant: %#v", got, test.Want)
+			}
+		})
+	}
+}
+
+func TestFileSet(t *testing.T) {
+	tests := []struct {
+		Path    cty.Value
+		Pattern cty.Value
+		Want    cty.Value
+		Err     bool
+	}{
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata*"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("{testdata,missing}"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata/missing"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata/missing*"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("*/missing"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("**/missing"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata/*.txt"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata/hello.txt"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata/hello.???"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata/hello*"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.tmpl"),
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("testdata/hello.{tmpl,txt}"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.tmpl"),
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("*/hello.txt"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("*/*.txt"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("*/hello*"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.tmpl"),
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("**/hello*"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.tmpl"),
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("**/hello.{tmpl,txt}"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("testdata/hello.tmpl"),
+				cty.StringVal("testdata/hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("["),
+			cty.SetValEmpty(cty.String),
+			true,
+		},
+		{
+			cty.StringVal("."),
+			cty.StringVal("\\"),
+			cty.SetValEmpty(cty.String),
+			true,
+		},
+		{
+			cty.StringVal("testdata"),
+			cty.StringVal("missing"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("testdata"),
+			cty.StringVal("missing*"),
+			cty.SetValEmpty(cty.String),
+			false,
+		},
+		{
+			cty.StringVal("testdata"),
+			cty.StringVal("*.txt"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("testdata"),
+			cty.StringVal("hello.txt"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("testdata"),
+			cty.StringVal("hello.???"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("hello.txt"),
+			}),
+			false,
+		},
+		{
+			cty.StringVal("testdata"),
+			cty.StringVal("hello*"),
+			cty.SetVal([]cty.Value{
+				cty.StringVal("hello.tmpl"),
+				cty.StringVal("hello.txt"),
+			}),
+			false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("FileSet(\".\", %#v, %#v)", test.Path, test.Pattern), func(t *testing.T) {
+			got, err := FileSet(".", test.Path, test.Pattern)
 
 			if test.Err {
 				if err == nil {

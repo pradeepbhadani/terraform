@@ -8,7 +8,11 @@ description: |-
   written in the Terraform language.
 ---
 
-# Configuration
+# Configuration Language
+
+-> **Note:** This page is about Terraform 0.12 and later. For Terraform 0.11 and
+earlier, see
+[0.11 Configuration Language](../configuration-0-11/index.html).
 
 Terraform uses its own configuration language, designed to allow concise
 descriptions of infrastructure. The Terraform language is declarative,
@@ -93,7 +97,7 @@ resources into source files in whatever way makes sense for your infrastructure.
 ## Terraform CLI vs. Providers
 
 The Terraform command line interface (CLI) is a general engine for evaluating
-and applying Terraform configuations. It defines the Terraform language syntax
+and applying Terraform configurations. It defines the Terraform language syntax
 and overall structure, and coordinates sequences of changes that must be made to
 make remote infrastructure match the given configuration.
 

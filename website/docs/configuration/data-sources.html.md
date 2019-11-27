@@ -8,6 +8,10 @@ description: |-
 
 # Data Sources
 
+-> **Note:** This page is about Terraform 0.12 and later. For Terraform 0.11 and
+earlier, see
+[0.11 Configuration Language: Data Sources](../configuration-0-11/data-sources.html).
+
 _Data sources_ allow data to be fetched or computed for use elsewhere
 in Terraform configuration. Use of data sources allows a Terraform
 configuration to make use of information defined outside of Terraform,
@@ -98,13 +102,13 @@ only within Terraform itself, calculating some results and exposing them
 for use elsewhere.
 
 For example, local-only data sources exist for
-[rendering templates](/docs/providers/template/d/template_file.html),
+[rendering templates](/docs/providers/template/d/file.html),
 [reading local files](/docs/providers/local/d/file.html), and
 [rendering AWS IAM policies](/docs/providers/aws/d/iam_policy_document.html).
 
 The behavior of local-only data sources is the same as all other data
 sources, but their result data exists only temporarily during a Terraform
-operation, and is re-calulated each time a new plan is created.
+operation, and is re-calculated each time a new plan is created.
 
 ## Data Resource Dependencies
 
@@ -125,10 +129,11 @@ resources.
 
 ## Multiple Resource Instances
 
-Data resources support [the `count` meta-argument](./resources.html#count-multiple-resource-instances)
-as defined for managed resources, with the same syntax and behavior.
+Data resources support [`count`](./resources.html#count-multiple-resource-instances-by-count)
+and [`for_each`](./resources.html#for_each-multiple-resource-instances-defined-by-a-map-or-set-of-strings)
+meta-arguments as defined for managed resources, with the same syntax and behavior.
 
-As with managed resources, when `count` is present it is important to
+As with managed resources, when `count` or `for_each` is present it is important to
 distinguish the resource itself from the multiple resource _instances_ it
 creates. Each instance will separately read from its data source with its
 own variant of the constraint arguments, producing an indexed result.

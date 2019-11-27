@@ -1,5 +1,5 @@
 ---
-layout: "guides"
+layout: "extend"
 page_title: "Terraform Provider Development Program"
 sidebar_current: "guides-terraform-provider-development-program"
 description: This guide is intended for vendors who're interested in having their platform supported by Teraform. The guide walks vendors through the steps involved in creating a provider and applying for it to be included with Terraform.
@@ -16,7 +16,7 @@ checkpoints.
 -> **Building your own provider?** If you're building your own provider and
 aren't interested in having HashiCorp officially approve and regularly test the
 provider, refer to the [Writing Custom Providers guide][writing] and the
-[Extending Terraform][extending] section. 
+[Extending Terraform][extending] section.
 
 ## What is a Terraform Provider?
 
@@ -118,6 +118,8 @@ to parallelize the test execution.
 Each provider has a section in the Terraform documentation. You'll want to add
 new index file and individual pages for each resource supported by the provider.
 
+All Terraform providers are required to contain a MPL-2.0 open source license.
+
 While developing the provider code yourself is certainly possible, you can also
 choose to leverage one of the following development agencies who’ve developed
 Terraform providers in the past and are familiar with the requirements and process.
@@ -126,7 +128,7 @@ Terraform providers in the past and are familiar with the requirements and proce
 |--------------------|:-----------------------------|:---------------------|
 | Crest Data Systems | malhar@crestdatasys.com      | www.crestdatasys.com |
 | DigitalOnUs        | hashicorp@digitalonus.com    | www.digitalonus.com  |
-| MustWin            | bd@mustwin.com               | www.mustwin.com      |
+| Akava              | bd@akava.io                  | www.akava.io         |
 | OpenCredo          | hashicorp@opencredo.com      | www.opencredo.com    |
 
 ### 4. Review
@@ -223,9 +225,9 @@ in the section above.
 
 * Address all review feedback, ensure that each resource has a corresponding  acceptance test, and the documentation is complete
 
-* Create a PR for the provider against the HashiCorp provided empty repo.
-
 * Plan to continue supporting the provider with additional functionality as well as addressing any open issues.
+
+* All Terraform providers are required to contain a MPL-2.0 open source license.
 
 ## Contact Us
 

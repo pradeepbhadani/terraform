@@ -9,6 +9,10 @@ description: |-
 
 # Input Variables
 
+-> **Note:** This page is about Terraform 0.12 and later. For Terraform 0.11 and
+earlier, see
+[0.11 Configuration Language: Input Variables](../configuration-0-11/variables.html).
+
 Input variables serve as parameters for a Terraform module, allowing aspects
 of the module to be customized without altering the module's own source code,
 and allowing modules to be shared between different configurations.
@@ -42,6 +46,21 @@ variable "availability_zone_names" {
   type    = list(string)
   default = ["us-west-1a"]
 }
+
+variable "docker_ports" {
+  type = list(object({
+    internal = number
+    external = number
+    protocol = string
+  }))
+  default = [
+    {
+      internal = 8300
+      external = 8300
+      protocol = "tcp"
+    }
+  ]
+}
 ```
 
 The label after the `variable` keyword is a name for the variable, which must
@@ -58,6 +77,8 @@ _except_ the following:
 - `count`
 - `for_each`
 - `lifecycle`
+- `depends_on`
+- `locals`
 
 These names are reserved for meta-arguments in
 [module configuration blocks](./modules.html), and cannot be
@@ -148,7 +169,7 @@ commentary for module maintainers, use comments.
 When variables are declared in the root module of your configuration, they
 can be set in a number of ways:
 
-* [In a Terraform Enterprise workspace](/docs/enterprise/workspaces/variables.html).
+* [In a Terraform Cloud workspace](/docs/cloud/workspaces/variables.html).
 * Individually, with the `-var` command line option.
 * In variable definitions (`.tfvars`) files, either specified on the command line
   or automatically loaded.
@@ -161,11 +182,13 @@ assigned in the configuration of their parent module, as described in
 
 ### Variables on the Command Line
 
-To specify individual modules on the command line, use the `-var` option
+To specify individual variables on the command line, use the `-var` option
 when running the `terraform plan` and `terraform apply` commands:
 
 ```
 terraform apply -var="image_id=ami-abc123"
+terraform apply -var='image_id_list=["ami-abc123","ami-def456"]'
+terraform apply -var='image_id_map={"us-east-1":"ami-abc123","us-east-2":"ami-def456"}'
 ```
 
 The `-var` option can be used any number of times in a single command.
@@ -181,8 +204,8 @@ or `.tfvars.json`) and then specify that file on the command line with
 terraform apply -var-file="testing.tfvars"
 ```
 
--> **Note:** This is how Terraform Enterprise passes
-[workspace variables](/docs/enterprise/workspaces/variables.html) to Terraform.
+-> **Note:** This is how Terraform Cloud passes
+[workspace variables](/docs/cloud/workspaces/variables.html) to Terraform.
 
 A variable definitions file uses the same basic syntax as Terraform language
 files, but consists only of variable name assignments:
@@ -249,7 +272,7 @@ $ export TF_VAR_image_id=ami-abc123
 However, if a root module variable uses a [type constraint](#type-constraints)
 to require a complex value (list, set, map, object, or tuple), Terraform will
 instead attempt to parse its value using the same syntax used within variable
-definitions files, which requires cafeful attention to the string escaping rules
+definitions files, which requires careful attention to the string escaping rules
 in your shell:
 
 ```
@@ -257,13 +280,14 @@ $ export TF_VAR_availability_zone_names='["us-west-1b","us-west-1d"]'
 ```
 
 For readability, and to avoid the need to worry about shell escaping, we
-recommend always setting complex variable values via varable definitions files.
+recommend always setting complex variable values via variable definitions files.
 
 ### Variable Definition Precedence
 
 The above mechanisms for setting variables can be used together in any
 combination. If the same variable is assigned multiple values, Terraform uses
-the _last_ value it finds, overriding any previous values.
+the _last_ value it finds, overriding any previous values. Note that the same
+variable cannot be assigned multiple values within a single source.
 
 Terraform loads variables in the following order, with later sources taking
 precedence over earlier ones:
@@ -274,7 +298,7 @@ precedence over earlier ones:
 * Any `*.auto.tfvars` or `*.auto.tfvars.json` files, processed in lexical order
   of their filenames.
 * Any `-var` and `-var-file` options on the command line, in the order they
-  are provided. (This includes variables set by a Terraform Enterprise
+  are provided. (This includes variables set by a Terraform Cloud
   workspace.)
 
 ~> **Important:** In Terraform 0.12 and later, variables with map and object
